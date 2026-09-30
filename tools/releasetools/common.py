@@ -1811,6 +1811,13 @@ def _BuildBootableImage(image_name, sourcedir, fs_config_file,
     cmd.append("--pagesize")
     cmd.append(open(fn).read().rstrip("\n"))
 
+  # Version arguments first, so that device arguments can override them, in
+  # the same order as the Make rules:
+  # $(INTERNAL_MKBOOTIMG_VERSION_ARGS) $(BOARD_MKBOOTIMG_ARGS).
+  args = info_dict.get("mkbootimg_version_args")
+  if args and args.strip():
+    cmd.extend(shlex.split(args))
+
   if partition_name == "recovery":
     args = info_dict.get("recovery_mkbootimg_args")
     if not args:
@@ -1821,10 +1828,6 @@ def _BuildBootableImage(image_name, sourcedir, fs_config_file,
     args = info_dict.get("mkbootimg_init_args")
   else:
     args = info_dict.get("mkbootimg_args")
-  if args and args.strip():
-    cmd.extend(shlex.split(args))
-
-  args = info_dict.get("mkbootimg_version_args")
   if args and args.strip():
     cmd.extend(shlex.split(args))
 
