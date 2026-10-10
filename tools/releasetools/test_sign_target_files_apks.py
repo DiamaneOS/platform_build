@@ -22,7 +22,7 @@ import zipfile
 import common
 import test_utils
 from sign_target_files_apks import (
-    CheckApkAndApexKeysAvailable, EditTags, GetApkFileInfo, ParseAvbInfo,
+    CheckApkAndApexKeysAvailable, EditTags, GetApkFileInfo,
     ReadApexKeysInfo, ReplaceCerts, RewriteAvbProps, RewriteProps,
     WriteOtacerts)
 
@@ -196,7 +196,64 @@ name="apex.apexd_test_different_app.apex" public_key="system/apex/apexd/apexd_te
     common.OPTIONS.key_map = {
         cert1_path[:-9] : cert2_path[:-9],
     }
-    self.assertRaises(AssertionError, ReplaceCerts, input_xml)
+    self.assertRaises(common.ExternalError, ReplaceCerts, input_xml)
+
+  def test_ReplaceCerts_disjointPackagePolicies(self):
+    common.OPTIONS.key_map = {}
+    xml = ('<policy><signer signature="fixture"><package name="one">'
+           '<seinfo value="first"/></package></signer><signer signature="fixture">'
+           '<package name="two"><seinfo value="second"/></package></signer></policy>')
+    self.assertEqual(xml, ReplaceCerts(xml))
+
+  def test_ReplaceCerts_packageAndGlobalPolicies(self):
+    common.OPTIONS.key_map = {}
+    xml = ('<policy><signer signature="fixture"><seinfo value="global"/></signer>'
+           '<signer signature="fixture"><package name="one">'
+           '<seinfo value="specific"/></package></signer></policy>')
+    self.assertEqual(xml, ReplaceCerts(xml))
+
+  def test_ReplaceCerts_overlappingPackagePolicies(self):
+    common.OPTIONS.key_map = {}
+    for second in ('first', 'other'):
+      xml = ('<policy><signer signature="fixture"><package name="one">'
+             '<seinfo value="first"/></package></signer><signer signature="fixture">'
+             '<package name="one"><seinfo value="{}"/></package></signer></policy>').format(second)
+      self.assertRaises(common.ExternalError, ReplaceCerts, xml)
+
+  def test_ReplaceCerts_completeCertificateSets(self):
+    common.OPTIONS.key_map = {}
+    xml = ('<policy><signer signature="first"><cert signature="second"/>'
+           '<package name="one"><seinfo value="specific"/></package></signer>'
+           '<signer signature="second"><cert signature="first"/>'
+           '<package name="one"><seinfo value="specific"/></package></signer></policy>')
+    self.assertRaises(common.ExternalError, ReplaceCerts, xml)
+    different = xml.replace('<cert signature="first"/>', '<cert signature="third"/>')
+    self.assertEqual(different, ReplaceCerts(different))
+
+  def test_ReplaceCerts_invalidSelectors(self):
+    common.OPTIONS.key_map = {}
+    for xml in (
+        '<policy><signer signature="@missing"><seinfo value="global"/></signer></policy>',
+        '<policy><signer signature="fixture"><cert signature="@missing"/><seinfo value="global"/></signer></policy>',
+        '<policy><signer signature="fixture"/></policy>',
+        '<policy><signer signature="fixture"><seinfo value="global"/><package name="one"><seinfo value="specific"/></package></signer></policy>',
+        '<policy><signer signature="fixture"><package name="one"/><package name="one"/></signer></policy>'):
+      self.assertRaises(common.ExternalError, ReplaceCerts, xml)
+
+  def test_ReplaceCerts_invalidSeinfo(self):
+    common.OPTIONS.key_map = {}
+    for child in ('<seinfo/>', '<seinfo value=""/>', '<seinfo value="bad:value"/>',
+                  '<seinfo value="one"/><seinfo value="other"/>'):
+      for xml in ('<policy><signer signature="fixture">{}</signer></policy>',
+                  '<policy><signer signature="fixture"><package name="one">{}</package></signer></policy>'):
+        self.assertRaises(common.ExternalError, ReplaceCerts, xml.format(child))
+
+  def test_ReplaceCerts_repeatedIdenticalInnerValues(self):
+    common.OPTIONS.key_map = {}
+    xml = ('<policy><signer signature="fixture"><package name="one"><seinfo value="same"/>'
+           '<seinfo value="same"/></package><package name="one">'
+           '<seinfo value="same"/></package></signer></policy>')
+    self.assertEqual(xml, ReplaceCerts(xml))
 
   def test_ReplaceCerts_skipNonExistentCerts(self):
     cert1_path = os.path.join(self.testdata_dir, 'platform.x509.pem')
