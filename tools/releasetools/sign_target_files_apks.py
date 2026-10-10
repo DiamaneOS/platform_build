@@ -1211,7 +1211,7 @@ def ReplaceCerts(data):
     A string after the replacement.
 
   Raises:
-    AssertionError: On finding duplicate entries.
+    common.ExternalError: On conflicting policy selectors or placeholders.
   """
   for old, new in OPTIONS.key_map.items():
     if OPTIONS.verbose:
@@ -1238,19 +1238,49 @@ def ReplaceCerts(data):
       print("    Replaced %d occurence(s) of %s.x509.pem with %s.x509.pem" % (
           num, old, new))
 
-  # Verify that there're no duplicate entries after the replacement. Note that
-  # it's only checking entries with global seinfo at the moment (i.e. ignoring
-  # the ones with inner packages). (Bug: 69479366)
+  # Match SELinuxMMAC.PolicyComparator: package-specific entries take precedence
+  # over global entries. Separate entries may share certificates when their
+  # package selectors are disjoint.
   root = ElementTree.fromstring(data)
-  signatures = [signer.attrib['signature']
-                for signer in root.findall('signer')]
-  assert len(signatures) == len(set(signatures)), \
-      "Found duplicate entries after cert replacement: {}".format(data)
+  global_signers = set()
+  package_signers = {}
 
-  # Verify that there are no placeholders anymore.
-  placeholders = [s for s in signatures if s.startswith("@")]
-  assert len(placeholders) == 0, \
-      "Found placeholders in mac_permissions.xml: {}".format(placeholders)
+  def seinfo_value(nodes):
+    values = [node.get('value') for node in nodes]
+    if not values or any(not value or not re.fullmatch(r'[A-Za-z0-9_.]+', value) for value in values):
+      raise common.ExternalError('Missing or invalid seinfo in mac_permissions.xml')
+    if len(set(values)) != 1:
+      raise common.ExternalError('Conflicting seinfo in mac_permissions.xml')
+    return values[0]
+
+  for signer in root.findall('signer'):
+    certificates = [signer.get('signature')] if signer.get('signature') else []
+    certificates += [cert.get('signature') for cert in signer.findall('cert')]
+    if not certificates or any(not cert or cert.startswith('@') for cert in certificates):
+      raise common.ExternalError('Missing certificate or placeholder in mac_permissions.xml')
+    signatures = frozenset(cert.lower() for cert in certificates)
+    global_seinfo = signer.findall('seinfo')
+    packages = {}
+    for package in signer.findall('package'):
+      name = package.get('name')
+      if not name or not re.fullmatch(r'[A-Za-z0-9_.]+', name):
+        raise common.ExternalError('Missing or invalid package in mac_permissions.xml')
+      value = seinfo_value(package.findall('seinfo'))
+      if name in packages and packages[name] != value:
+        raise common.ExternalError('Conflicting package seinfo in mac_permissions.xml')
+      packages[name] = value
+    if bool(global_seinfo) == bool(packages):
+      raise common.ExternalError('Signer must contain a global or package-specific seinfo policy')
+    if global_seinfo:
+      seinfo_value(global_seinfo)
+      if signatures in global_signers:
+        raise common.ExternalError('Duplicate global signer in mac_permissions.xml')
+      global_signers.add(signatures)
+    else:
+      previous = package_signers.setdefault(signatures, set())
+      if not previous.isdisjoint(packages):
+        raise common.ExternalError('Overlapping package signer in mac_permissions.xml')
+      previous.update(packages)
 
   return data
 
